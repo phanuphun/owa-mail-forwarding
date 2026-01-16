@@ -1,54 +1,62 @@
 import puppeteer from 'puppeteer';
 import dotenv from 'dotenv'
-import { sleep } from './helper/sleep.js';
-import login from './utils/login.pup.js';
-import logout from './utils/logout.pup.js';
-import filterUnreadMails from './utils/filterUnreadMails.pup.js';
-import getVisibleMailCount from './utils/getVisibleMailCount.pup.js';
-import openMail from './utils/openMail.js';
-import clearFilter from './utils/clearFilter.js';
+import {sleep} from './helper/sleep.js';
+import loginAction from './owa/actions/login.action.js';
+import mailAction from './owa/actions/mail.action.js';
 dotenv.config();
 
-const baseUrl = process.env.MAIL_URL;
-const usrMail = process.env.USR_MAIL;
-const usrPwd = process.env.USR_PWD;
-const forwardMail = process.env.FORWARD_MAIL;
+const owaUrl = process.env.MAIL_URL;
+const browser = await puppeteer.launch({
+    headless: false,
+    slowMo: 10,
+    defaultViewport: null,
+    args: ['--start-maximized'],
+});
+const page = await browser.newPage({});
+page.setDefaultTimeout(30000);
+await page.goto(owaUrl , {waitUntil: 'domcontentloaded'});
 
-const browser = await puppeteer.launch({ headless: false });
-const page = await browser.newPage();
-page.setDefaultTimeout(30000); // 30 seconds 
-
-await page.goto(baseUrl , {waitUntil: 'domcontentloaded'});
-await page.setViewport({width: 1080, height: 1024});
-
-// Login Page
-await login(page, usrMail , usrPwd);
-await sleep(1000); 
-await filterUnreadMails(page);
-
-// close filter menu overlay
-await page.keyboard.press('Escape'); 
-await sleep(500);
-
-const totalMailFounded = await getVisibleMailCount(page);
-console.log(`[3] : Visible unread mails: ${totalMailFounded}`);
-if (totalMailFounded === 0) {
-    console.log("No unread mails found. Exiting.");
-    await logout(page);
+async function stopProcess() {
+    await loginAction.logout(page);
     await browser.close();
+    console.log("[xxxx] : Process stopped due to no unread mails.");
     process.exit(0);
 }
 
-for (let i = 0; i < totalMailFounded; i++) {
-    await openMail(page, i);
-    await sleep(1000);
-    await clearFilter(page);
-    await filterUnreadMails(page);
+// [1] Login Page
+await loginAction.login(page);
+
+// [2] Mail Page - Filter Unread Mails
+await mailAction.openFilterMenu(page);
+await mailAction.clickUnreadFilterMenu(page);
+
+// [3] Get Visible Unread Mail Count
+let totalMailsFounded = 0;
+await mailAction.clearFilterOverlayMenu(page);
+await mailAction.findMailItems(page).then(async (totalItems)=>{
+    if (totalItems === 0) return stopProcess()
+    else totalMailsFounded = totalItems;
+})
+
+// [4] Process each mail
+while(true) {
+    await mailAction.clickMail(page, 0);
     await sleep(500);
-    console.log(`[5] : Opened mail ${i + 1} of ${totalMailFounded}.`);
+    await mailAction.openMailMenu(page, 0);
+    await mailAction.clickMailForwardMenu(page, 0);
+    await mailAction.fillForwardAddress(page);
+    await mailAction.clickSendMailButton(page);
+    await mailAction.clickMailDetailMoreMenu(page, 0); 
+    await mailAction.clickMarkAsReadMenu(page, 0);
+
+    // clear filter and re-apply
+    await mailAction.clearFilterMenu(page);
+    await mailAction.openFilterMenu(page);
+    await mailAction.clickUnreadFilterMenu(page);
+    await mailAction.clearFilterOverlayMenu(page);
+
+    totalMailsFounded -= 1;
+    if (totalMailsFounded == 0) break;
 }
 
-// logout หลังทำครบ
-await logout(page);
-await browser.close();
-process.exit(0);
+await stopProcess();
